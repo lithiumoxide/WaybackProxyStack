@@ -1,0 +1,249 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "CloudFormation template fro deploying WaybackProxy",
+    "Parameters": {
+        "InstanceType": {
+            "Type": "String",
+            "Default": "t3.medium",
+            "AllowedValues": [
+                "t3.small",
+                "t3.medium",
+                "t3.large"
+            ],
+            "ConstraintDescription": "Must be one of: t3.small, t3.medium, t3.large"
+        },
+        "KeyName": {
+            "Type": "String"
+        },
+        "SecurityGroupIpRange": {
+            "Type": "String",
+            "Default": "0.0.0.0/0"
+        },
+        "VpcCidrBlock": {
+            "Type": "String",
+            "Default": "10.100.0.0/24"
+        },
+        "SubnetCidrBlock": {
+            "Type": "String",
+            "Default": "10.100.0.0/28"
+        }
+    },
+    "Metadata": {
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "Instance and security configuration"
+                    },
+                    "Parameters": [
+                        "InstanceType",
+                        "KeyName",
+                        "SecurityGroupIpRange"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Networking configuration"
+                    },
+                    "Parameters": [
+                        "VpcCidrBlock",
+                        "SubnetCidrBlock"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "InstanceType": {
+                    "default": "Instance type"
+                },
+                "KeyName": {
+                    "default": "Optional SSH key name (must already exist in AWS; this opens port 22 to the IP range specified in the security group)"
+                },
+                "SecurityGroupIpRange": {
+                    "default": "The IP range the instance should be accessible from"
+                },
+                "VpcCidrBlock": {
+                    "default": "The IP range for the VPC"
+                },
+                "SubnetCidrBlock": {
+                    "default": "The IP range for the public subnet"
+                }
+            }
+        }
+    },
+    "Conditions": {
+        "HasKeyName": {
+            "Fn::Not": [
+                {
+                    "Fn::Equals": [
+                        "",
+                        {
+                            "Ref": "KeyName"
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    "Resources": {
+        "WaybackProxyInstance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {
+                    "Fn::If": [
+                        "HasKeyName",
+                        {
+                            "Ref": "KeyName"
+                        },
+                        {
+                            "Ref": "AWS::NoValue"
+                        }
+                    ]
+                },
+                "DisableApiTermination": "false",
+                "ImageId": "ami-0b995c42184e99f98",
+                "InstanceType": {
+                    "Ref": "InstanceType"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "InstanceSecurityGroup"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": "#!/bin/bash\nyum update -y\nyum install -y git\nyum install -y pip\ncd /home/ec2-user/\ngit clone https://github.com/richardg867/WaybackProxy.git\ncd WaybackProxy/\npip install --yes --user -r requirements.txt\npython3 waybackproxy.py\n"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "WaybackProxy"
+                    }
+                ]
+            }
+        },
+        "InstanceSecurityGroup": {
+            "Type": "AWS::EC2::SecurityGroup",
+            "Properties": {
+                "GroupDescription": "Enable proxy access via port 8888",
+                "SecurityGroupIngress": [
+                    {
+                        "IpProtocol": "tcp",
+                        "FromPort": "8888",
+                        "ToPort": "8888",
+                        "CidrIp": {
+                            "Ref": "SecurityGroupIpRange"
+                        }
+                    },
+                    {
+                        "Fn::If": [
+                            "HasKeyName",
+                            {
+                                "IpProtocol": "tcp",
+                                "FromPort": "22",
+                                "ToPort": "22",
+                                "CidrIp": {
+                                    "Ref": "SecurityGroupIpRange"
+                                }
+                            },
+                            {
+                                "Ref": "AWS::NoValue"
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+        "Vpc": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "EnableDnsSupport": "true",
+                "EnableDnsHostnames": "true",
+                "CidrBlock": {
+                    "Ref": "VpcCidrBlock"
+                }
+            }
+        },
+        "InternetGateway": {
+            "Type": "AWS::EC2::InternetGateway",
+            "DependsOn": "Vpc",
+            "Properties": {}
+        },
+        "InternetGatewayAttachment": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "Vpc"
+                },
+                "InternetGatewayId": {
+                    "Ref": "InternetGateway"
+                }
+            }
+        },
+        "PublicSubnet": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "MapPublicIpOnLaunch": "true",
+                "VpcId": {
+                    "Ref": "Vpc"
+                },
+                "AvailabilityZone": {
+                    "Fn::Select": [
+                        0,
+                        {
+                            "Fn::GetAZs": ""
+                        }
+                    ]
+                },
+                "CidrBlock": {
+                    "Ref": "SubnetCidrBlock"
+                }
+            }
+        },
+        "RouteTable": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "Vpc"
+                }
+            }
+        },
+        "PublicRoute": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn": "InternetGatewayAttachment",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "RouteTable"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {
+                    "Ref": "InternetGateway"
+                }
+            }
+        },
+        "PublicRouteTableAssociation": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "PublicSubnet"
+                },
+                "RouteTableId": {
+                    "Ref": "RouteTable"
+                }
+            }
+        }
+    },
+    "Outputs": {
+        "PublicIp": {
+            "Value": {
+                "Fn::GetAtt": [
+                    "WaybackProxyInstance",
+                    "PublicIp"
+                ]
+            },
+            "Description": "Instance's public IP address"
+        },
+        "ProxyPort": {
+            "Value": "8888",
+            "Description": "Instance's proxy port"
+        }
+    }
+}
